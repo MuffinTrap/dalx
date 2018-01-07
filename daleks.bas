@@ -6,30 +6,6 @@ USING FB
 
 
 ' Type declarations
-TYPE POSITION
-    x AS INTEGER
-    y AS INTEGER
-    DECLARE OPERATOR LET (BYREF rhs AS POSITION)
-END TYPE
-
-OPERATOR POSITION.LET (BYREF rhs AS POSITION)
-    x = rhs.x
-    y = rhs.y
-END OPERATOR
-
-TYPE ROBOT
-    tile AS INTEGER
-    target_tile AS INTEGER
-    operational AS INTEGER
-END TYPE
-
-TYPE PLAYER
-    robo AS ROBOT
-    sonic_bomb AS INTEGER
-    last_stand AS INTEGER
-    score AS INTEGER
-END TYPE
-
 ENUM MAP_RESULT
     player_win = 1
     robots_win = 2
@@ -44,55 +20,114 @@ ENUM GAME_LOOP_STATE
     collision_check = 4
 END ENUM
 
+ENUM PLAYER_ACTION
+    no_action = 0
+    move_action = 1
+    teleport = 2
+    sonic = 3
+    last_stand = 4
+    new_game = 5
+    quit_game = 6
+END ENUM
+
+TYPE VECTOR2
+    x AS SINGLE
+    y AS SINGLE
+    DECLARE OPERATOR LET (BYREF rhs AS VECTOR2)
+END TYPE
+
+OPERATOR VECTOR2.LET (BYREF rhs AS VECTOR2)
+    x = rhs.x
+    y = rhs.y
+END OPERATOR
+
+TYPE TILE
+    x AS INTEGER
+    y AS INTEGER
+    DECLARE OPERATOR LET (BYREF rhs AS TILE)
+END TYPE
+
+OPERATOR TILE.LET (BYREF rhs AS TILE)
+    x = rhs.x
+    y = rhs.y
+END OPERATOR
+
+OPERATOR = (BYREF lhs AS TILE, BYREF rhs AS TILE) AS INTEGER
+    IF lhs.x = rhs.x AND lhs.y = rhs.y THEN
+        RETURN TRUE
+    ELSE
+        RETURN FALSE
+    END IF
+END OPERATOR
+
+TYPE ROBOT
+    current_tile AS TILE
+    target_tile AS TILE
+    operational AS INTEGER
+END TYPE
+
+TYPE PLAYER
+    robo AS ROBOT
+    sonic_bomb AS INTEGER
+    last_stand AS INTEGER
+    score AS INTEGER
+    action AS PLAYER_ACTION
+END TYPE
+
+
+
 
 ' Function declarations
+' Game state
 DECLARE SUB test_functions
 DECLARE SUB load_graphics
 DECLARE SUB init_game
 DECLARE SUB init_map (map_number AS INTEGER)
-
-DECLARE SUB find_free_tile (BYREF robo AS ROBOT, max_tile AS INTEGER)
-DECLARE FUNCTION robot_collision (robo_a AS ROBOT, robo_b AS ROBOT) AS INTEGER
-
-DECLARE SUB draw_game
-DECLARE SUB draw_robot (robo AS ROBOT)
-DECLARE SUB draw_player (robo AS ROBOT)
-
 DECLARE SUB run_game
 DECLARE FUNCTION game_loop AS MAP_RESULT
-
-DECLARE SUB start_frame_timing
-DECLARE SUB end_frame_timing
-
-DECLARE SUB draw_tiles
-DECLARE SUB draw_robots_and_player
-
 DECLARE FUNCTION get_map_result AS MAP_RESULT
 DECLARE SUB check_collisions
 DECLARE SUB move_robots
 DECLARE SUB calculate_robot_targets
 
-DECLARE FUNCTION get_random_tile (max_tile AS INTEGER) AS INTEGER
-DECLARE FUNCTION get_center_tile AS INTEGER
-DECLARE FUNCTION tile_to_position (tile AS INTEGER) AS POSITION
-DECLARE FUNCTION position_to_tile (tile_position AS POSITION) AS INTEGER
+' Timing
+DECLARE SUB start_frame_timing
+DECLARE SUB end_frame_timing
 
-DECLARE FUNCTION get_tile_dimensions AS POSITION
-DECLARE FUNCTION get_tile_pixel_coordinates (tile AS POSITION) AS POSITION
+' Drawing
+DECLARE SUB draw_tiles
+DECLARE SUB draw_robots_and_player
 
-DECLARE SUB print_tile (name_string AS STRING, tile AS INTEGER)
+' Tiles
+DECLARE FUNCTION get_random_tile AS TILE
+DECLARE FUNCTION get_center_tile AS TILE
+DECLARE FUNCTION get_tile_pixel_coordinates (tile_coords AS TILE) AS VECTOR2
+DECLARE SUB print_tile (name_string AS STRING, tile_coords AS TILE)
+DECLARE FUNCTION is_pixel_inside_tile (pixel_pos AS VECTOR2, tile AS TILE) AS INTEGER
+
+' Robots
+DECLARE FUNCTION find_free_tile (max_robo_inced AS INTEGER) AS TILE
+DECLARE FUNCTION is_tile_occupied (tile AS TILE) AS INTEGER
+DECLARE FUNCTION robot_collision (robo_a AS ROBOT, robo_b AS ROBOT) AS INTEGER
+
+' Player
+DECLARE FUNCTION get_player_action AS PLAYER_ACTION
+'   return the action run or no_action when done
+DECLARE FUNCTION run_player_action (action AS PLAYER_ACTION ) AS PLAYER_ACTION 
 
 ' Globals
 
-CONST map_width = 20
-CONST map_height = 20
-CONST max_tile_number = (map_width * map_height) - 1
+CONST map_width = 11
+CONST map_height = 11
 
 CONST margin_x = 40
 CONST margin_y = 20
 
 CONST screen_width = 640
 CONST screen_height = 480
+
+CONST tile_width = INT( (screen_width - margin_x * 2) / map_width)
+CONST tile_height = INT( (screen_height - margin_y * 2) / map_height)
 
 CONST starting_robots = 10
 CONST add_robots = 1
@@ -101,8 +136,11 @@ DIM SHARED AS INTEGER work_page = 1, show_page = 0
 DIM SHARED AS DOUBLE frame_time, extra_time
 DIM SHARED AS STRING key_pressed
 DIM SHARED AS INTEGER mouse_x, mouse_y, mouse_button
-' How fast in pixels player and robots move
-CONST move_speed = 32
+' How fast in tiles player and robots move per frame
+' One tile in second. Frame is 0.033 seconds. One tile in 30 frames
+' One second is 30 frames
+CONST AS SINGLE move_speed = 1.0 / 20.0
+DIM SHARED AS SINGLE move_progress = 0.0
 
 DIM SHARED AS INTEGER current_map = 0
 
@@ -116,7 +154,7 @@ DIM SHARED AS ANY PTR robot_sprite, player_sprite _
 DIM SHARED AS INTEGER active_robots = 0
 ' How many robots are functional
 DIM SHARED AS INTEGER operational_robots = 0
-DIM SHARED AS ROBOT robots_array(max_tile_number)
+DIM SHARED AS ROBOT robots_array((map_width * map_height) -1)
 
 DIM SHARED AS PLAYER active_player
 
@@ -136,28 +174,24 @@ run_game
 ' Function implementations
 
 SUB test_functions
-    DIM AS INTEGER c_tile = get_center_tile
+    DIM AS TILE c_tile = get_center_tile
     print_tile("Center tile", c_tile)
     
-    print_tile("Player", active_player.robo.tile)
+    print_tile("Player", active_player.robo.current_tile)
     
     DIM AS STRING robot_name
     
     FOR robot_index AS INTEGER = 0 TO active_robots - 1
         robot_name = "Robot " & robot_index
-        print_tile(robot_name, robots_array(robot_index).tile)
+        print_tile(robot_name, robots_array(robot_index).current_tile)
     NEXT robot_index
     
-    FOR tile_index AS INTEGER = 0 TO max_tile_number
-        print_tile("Tile " & tile_index, tile_index)
-    NEXT tile_index
-    
-    DIM AS POSITION tile_pos
+    DIM AS TILE tile_pos
     FOR tile_y AS INTEGER = 0 TO map_height - 1
         FOR tile_x AS INTEGER = 0 TO map_width - 1
             tile_pos.x = tile_x
             tile_pos.y = tile_y
-        print_tile("Tile " & tile_x & "," & tile_y, position_to_tile(tile_pos))
+        print_tile("Tile ", tile_pos)
         NEXT tile_x
     NEXT tile_y
     
@@ -167,10 +201,8 @@ SUB test_functions
     
 END SUB
 
-SUB print_tile (name_string AS STRING, tile AS INTEGER)
-    DIM AS POSITION tile_coords
-    tile_coords = tile_to_position (tile)
-     PRINT name_string; " is tile ";tile ; " at "; tile_coords.x ; "," ; tile_coords.y
+SUB print_tile (name_string AS STRING, tile_coords AS TILE)
+   PRINT name_string; " is tile  at "; tile_coords.x ; "," ; tile_coords.y
 END SUB
 
 SUB init_game
@@ -234,7 +266,16 @@ FUNCTION game_loop AS MAP_RESULT
             ' draw player arrows
             
             ' wait until user selects an arrow or ability
+            DIM AS PLAYER_ACTION action = get_player_action
+            IF action <> no_action THEN
+                active_player.action = action
+                loop_state = animate_player
+            END IF
         CASE animate_player
+            active_player.action = run_player_action(active_player.action)
+            IF active_player.action = no_action THEN
+                loop_state = wait_input
+            END IF
             ' move player or do action
             ' teleport 
             ' sonic bomb
@@ -290,64 +331,143 @@ SUB end_frame_timing
     END IF
 END SUB
 
-FUNCTION get_tile_dimensions AS POSITION
-    DIM AS POSITION tile_pixel_dimensions
+FUNCTION get_player_action AS PLAYER_ACTION
+    IF mouse_button = 1 THEN
+        ' Is mouse cursor inside a tile next to player?
+        ' Which tile?
+        ' Is tile valid, not outside grid?
+        ' Is tile occupied by a robot?
+        ' return move action
+        DIM AS TILE move_tile
+        FOR tile_x AS INTEGER = -1 TO 1
+            FOR tile_y AS INTEGER = -1 TO 1
+                ' Skip player
+                IF tile_x = 0 AND tile_y = 0 THEN
+                    CONTINUE FOR
+                END IF
+                
+                move_tile.x = active_player.robo.current_tile.x + tile_x
+                move_tile.y = active_player.robo.current_tile.y + tile_y
+                
+                DIM AS VECTOR2 mouse_pos
+                mouse_pos.x = mouse_x
+                mouse_pos.y = mouse_y
+                IF is_pixel_inside_tile(mouse_pos, move_tile) THEN
+                    IF move_tile.x >= 0 AND move_tile.x < map_width _
+                    AND move_tile.y >= 0 AND move_tile.y < map_height THEN
+                        IF is_tile_occupied(move_tile) = FALSE THEN
+                            active_player.robo.target_tile = move_tile
+                            RETURN move_action
+                        END IF
+                    END IF
+                END IF
+            NEXT tile_y
+        NEXT tile_x
+                
+    ' Check ability buttons
+        ' is_mouse_inside_button
+    ' Player clicks ability
+    END IF 
+    
+    RETURN no_action
+END FUNCTION
+
+FUNCTION run_player_action (action AS PLAYER_ACTION) AS PLAYER_ACTION
+    SELECT CASE action 
+    CASE move_action
+        move_progress += move_speed
+        IF move_progress >= 1.0 THEN
+            active_player.robo.current_tile = active_player.robo.target_tile
+            move_progress = 0.0
+            RETURN no_action
+        ELSE
+            RETURN move_action
+        END IF
+    END SELECT
+    
+    RETURN no_action
+END FUNCTION
+
+FUNCTION get_tile_dimensions AS VECTOR2
+    DIM AS VECTOR2 tile_pixel_dimensions
     tile_pixel_dimensions.x = INT( (screen_width - margin_x * 2) / map_width)
     tile_pixel_dimensions.y = INT( (screen_height - margin_y * 2) / map_height)
     
     RETURN tile_pixel_dimensions
 END FUNCTION
 
-FUNCTION get_tile_pixel_coordinates (tile AS POSITION) AS POSITION
-    DIM AS POSITION tile_size = get_tile_dimensions
-    DIM AS POSITION tile_pixel_coords
-    tile_pixel_coords.x = margin_x + tile.x * tile_size.x
-    tile_pixel_coords.y = margin_y + tile.y * tile_size.y
+FUNCTION get_tile_pixel_coordinates (tile_coords AS TILE) AS VECTOR2
+    DIM AS VECTOR2 tile_pixel_coords
+    tile_pixel_coords.x = margin_x + tile_coords.x * tile_width
+    tile_pixel_coords.y = margin_y + tile_coords.y * tile_height
     RETURN tile_pixel_coords
+END FUNCTION
+
+FUNCTION is_pixel_inside_tile (pixel_pos AS VECTOR2, tile_coords AS TILE) AS INTEGER
+    DIM AS VECTOR2 tile_pixels = get_tile_pixel_coordinates( tile_coords )
+    IF pixel_pos.x >= tile_pixels.x AND pixel_pos.x < tile_pixels.x + tile_width THEN
+        IF pixel_pos.y >= tile_pixels.y AND pixel_pos.y < tile_pixels.y + tile_height THEN
+            RETURN TRUE
+        END IF
+    END IF
+    
+    RETURN FALSE
 END FUNCTION
     
 SUB draw_tiles
-    DIM AS POSITION tile_size = get_tile_dimensions
-    DIM AS POSITION tile_position 
+    DIM AS TILE tile_coords
+    DIM AS VECTOR2 tile_pixel_pos
     
     FOR tile_y AS INTEGER = 0 TO map_height - 1
         FOR tile_x AS INTEGER = 0 TO map_width - 1
-            tile_position.x = tile_x
-            tile_position.y = tile_y
-            tile_position = get_tile_pixel_coordinates (tile_position)
-            LINE ( tile_position.x, tile_position.y) - _
-                STEP(tile_size.x, tile_size.y), ,B
+            tile_coords.x = tile_x
+            tile_coords.y = tile_y
+            tile_pixel_pos = get_tile_pixel_coordinates (tile_coords)
+            LINE ( tile_pixel_pos.x, tile_pixel_pos.y) - _
+                STEP(tile_width, tile_height), ,B
         NEXT tile_x
     NEXT tile_y
 END SUB
 
 SUB draw_robots_and_player
-    DIM AS POSITION tile_size = get_tile_dimensions
     DIM AS INTEGER robot_width = 3, robot_height = 3
-    DIM AS POSITION tile_position 
+    DIM AS VECTOR2 tile_position 
     
     FOR robot_index AS INTEGER = 0 TO active_robots - 1
-        tile_position = tile_to_position (robots_array(robot_index).tile)
-        tile_position = get_tile_pixel_coordinates (tile_position)
+        tile_position = get_tile_pixel_coordinates (robots_array(robot_index).current_tile)
         LINE (tile_position.x + robot_width, tile_position.y + robot_height) - _
-        STEP ( tile_size.x - robot_width * 2, tile_size.y - robot_height * 2), ,BF
+        STEP ( tile_width - robot_width * 2, tile_height - robot_height * 2), ,BF
     NEXT robot_index
     
     'Player
-    tile_position = tile_to_position (active_player.robo.tile)
-    tile_position = get_tile_pixel_coordinates(tile_position)
-    CIRCLE (tile_position.x + tile_size.x / 2, tile_position.y + tile_size.y /2), _
-    tile_size.x / 3
+    
+    DIM AS VECTOR2 start_pos, end_pos, move_vector
+    start_pos = get_tile_pixel_coordinates(active_player.robo.current_tile)
+    IF move_progress > 0 THEN
+        end_pos = get_tile_pixel_coordinates(active_player.robo.target_tile)
+        move_vector.x = end_pos.x - start_pos.x
+        move_vector.y = end_pos.y - start_pos.y
+        
+        start_pos.x += move_progress * move_vector.x
+        start_pos.y += move_progress * move_vector.y
+        
+        CIRCLE (end_pos.x + tile_width / 2, end_pos.y + tile_height /2), _
+    tile_width / 5
+        
+    END IF
+    
+    CIRCLE (start_pos.x + tile_width / 2, start_pos.y + tile_height /2), _
+    tile_width / 3
     
 END SUB
 
 SUB calculate_robot_targets
-    DIM AS POSITION player_position, robot_position, target_position
-    player_position = tile_to_position (active_player.robo.tile)
+    DIM AS TILE player_position, robot_position, target_position
+    player_position = active_player.robo.current_tile
     
     FOR robot_index AS INTEGER = 0 TO active_robots - 1
         IF robots_array(robot_index).operational = TRUE THEN
-            robot_position = tile_to_position (robots_array(robot_index).tile)
+            robot_position = robots_array(robot_index).current_tile
             target_position = robot_position
             IF player_position.x > robot_position.x THEN
                 target_position.x += 1
@@ -361,33 +481,17 @@ SUB calculate_robot_targets
                 target_position.y -= 1
             END IF 
             
-            robots_array(robot_index).target_tile = position_to_tile(target_position)
+            robots_array(robot_index).target_tile = target_position
             
         END IF
     NEXT robot_index
 END SUB
 
-FUNCTION get_center_tile AS INTEGER
-    DIM AS POSITION center_position
+FUNCTION get_center_tile AS TILE
+    DIM AS TILE center_position
     center_position.x = INT(map_width / 2)
     center_position.y = INT(map_height / 2)
-    RETURN position_to_tile (center_position)
-END FUNCTION
-
-FUNCTION tile_to_position (tile AS INTEGER) AS POSITION
-    DIM AS POSITION result_position
-    result_position.y = INT(tile / map_width)
-    result_position.x = tile MOD map_width
-    
-    RETURN result_position
-END FUNCTION
-
-FUNCTION position_to_tile (tile_position AS POSITION) AS INTEGER
-    DIM AS INTEGER result_tile
-    result_tile += tile_position.y * (map_width)
-    result_tile += tile_position.x
-    
-    RETURN result_tile
+    RETURN center_position
 END FUNCTION
 
 SUB check_collisions 
@@ -435,12 +539,12 @@ SUB init_map(map_number AS INTEGER)
 
     ' Randomize robot positions and set them operational
     FOR robot_index AS INTEGER = 0 TO active_robots - 1
-        find_free_tile (robots_array(robot_index), robot_index)
+        robots_array(robot_index).current_tile = find_free_tile (robot_index)
         robots_array(robot_index).operational = TRUE
     NEXT robot_index
     
     ' Place player in the middle
-    active_player.robo.tile = get_center_tile
+    active_player.robo.current_tile = get_center_tile
     
     ' Check that no robot occupies player's tile
     DIM player_tile AS INTEGER = FALSE
@@ -453,37 +557,48 @@ SUB init_map(map_number AS INTEGER)
                 THEN
                 player_tile = TRUE
                 PRINT "Same tile as player"
-                find_free_tile (robots_array(robot_index), active_robots)
+                robots_array(robot_index).current_tile = find_free_tile (active_robots - 1)
                 EXIT FOR
             END IF
         NEXT robot_index
     LOOP UNTIL player_tile = FALSE
 END SUB
 
-FUNCTION get_random_tile (max_tile AS INTEGER) AS INTEGER
-    DIM AS INTEGER rnd_tile = INT(RND * CDBL(max_tile + 1))
+FUNCTION get_random_tile AS TILE
+    DIM AS TILE rnd_tile 
+    rnd_tile.x = INT(RND * CDBL(map_width))
+    rnd_tile.y = INT(RND * CDBL(map_height))
     RETURN rnd_tile
 END FUNCTION
 
+FUNCTION is_tile_occupied (tile_coord AS TILE) AS INTEGER
+    FOR test_index AS INTEGER = 0 TO active_robots - 1
+        IF robots_array(test_index).current_tile = tile_coord THEN
+            RETURN TRUE
+        END IF
+    NEXT test_index
+    
+    RETURN FALSE
+END FUNCTION
 
-
-SUB find_free_tile (BYREF robo AS ROBOT, max_robo_index AS INTEGER)
-    DIM AS INTEGER same_tile = FALSE, try_tile = 0
+FUNCTION find_free_tile (max_robo_index AS INTEGER) AS TILE
+    DIM AS INTEGER same_tile = FALSE 
+    DIM AS TILE try_tile
     DO
         same_tile = FALSE
-        try_tile = get_random_tile(max_tile_number)
+        try_tile = get_random_tile
         FOR test_index AS INTEGER = 0 TO max_robo_index - 1
-            IF robots_array(test_index).tile = try_tile THEN
+            IF robots_array(test_index).current_tile = try_tile THEN
                 same_tile = TRUE
                 EXIT FOR
             END IF
         NEXT test_index
     LOOP UNTIL same_tile = FALSE
-    robo.tile = try_tile
-END SUB
+    RETURN try_tile
+END FUNCTION
 
 FUNCTION robot_collision (robo_a AS ROBOT, robo_b AS ROBOT) AS INTEGER
-    IF robo_a.tile = robo_b.tile THEN
+    IF robo_a.current_tile = robo_b.current_tile THEN
         RETURN TRUE
     ELSE
         RETURN FALSE
