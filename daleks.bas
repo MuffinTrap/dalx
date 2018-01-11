@@ -1,9 +1,9 @@
 ' Daleks clone by MuffinTrap
-' Original Daleks game for Macintosh by xxx 
+' Original Daleks game for Macintosh by Johan Strandberg
+' See License.md and Readme.md for more information
 
 #include "fbgfx.bi"
 USING FB
-
 
 ' Type declarations
 ENUM MAP_RESULT
@@ -19,6 +19,7 @@ ENUM GAME_LOOP_STATE
     animate_player
     animate_robots
     collision_check
+    game_over
     exit_loop
 END ENUM
 
@@ -141,6 +142,8 @@ DECLARE SUB end_frame_timing
 DECLARE SUB draw_title()
 DECLARE SUB draw_instructions()
 
+DECLARE SUB draw_game_over()
+
 DECLARE SUB draw_menu
 DECLARE SUB draw_button (button_to_draw AS BUTTON, enabled AS INTEGER)
 DECLARE SUB draw_tiles
@@ -172,7 +175,8 @@ DECLARE SUB give_player_score (robots_loop_begin AS INTEGER)
 DECLARE FUNCTION is_tile_valid_for_move (test_tile AS TILE) AS INTEGER
 
 ' Menu
-DECLARE FUNCTION get_menu_action AS PLAYER_ACTION
+DECLARE FUNCTION get_ability_menu_action AS PLAYER_ACTION
+DECLARE FUNCTION get_game_menu_action AS PLAYER_ACTION
 DECLARE FUNCTION is_mouse_on_button (test_button AS BUTTON) AS INTEGER
 
 ' Globals
@@ -203,7 +207,7 @@ DIM SHARED AS INTEGER mouse_down = FALSE, mouse_click = FALSE
 ' How fast in tiles player and robots move per frame
 ' One tile in second. Frame is 0.033 seconds. One tile in 30 frames
 ' One second is 30 frames
-CONST AS SINGLE move_speed = 1.0 / 20.0
+CONST AS SINGLE move_speed = 1.0 / 9.0
 
 DIM SHARED AS SINGLE animation_progress = 0.0
 
@@ -212,7 +216,7 @@ CONST AS SINGLE teleport_speed = 1.0 / 20.0
 DIM SHARED AS SINGLE teleport_out = TRUE
 
 ' Robot
-DIM SHARED AS SINGLE robot_animation_progress = 0.0, robot_animation_speed = 1.0/14.0
+DIM SHARED AS SINGLE robot_animation_progress = 0.0, robot_animation_speed = 1.0/9.0
 
 ' Tiles 
 DIM SHARED AS SINGLE color_start_number = 0.0, color_skip_number = 0.0, tile_colors = 7.0, last_color, last_skip
@@ -235,7 +239,7 @@ DIM SHARED AS VECTOR2 ripple_size, ripple_origin
 DIM SHARED AS INTEGER current_map = 0
 
 DIM SHARED AS ANY PTR title_image
-DIM SHARED AS INTEGER title_width = 603, title_height = 156
+DIM SHARED AS INTEGER title_width = 603, title_height = 156, title_loaded = FALSE
 
 ' How many robots are active in current map
 DIM SHARED AS INTEGER active_robots = 0
@@ -253,8 +257,8 @@ DIM SHARED AS INTEGER color_black = RGB(0,0,0), color_white = RGB(255,255,255) _
 , color_metal = RGB(100,100,100), color_red = RGB(255,60,60), color_blue = RGB(80, 100, 255) _
 , color_light_grey = RGB(200, 200, 200), color_dark_grey = RGB(80, 80, 80)
 
+' -----------------------------------------------------------
 ' Main module start ------
-
 init_game
 test_functions
 
@@ -263,9 +267,13 @@ SETMOUSE 0,0,0
 SCREENSET work_page, show_page
 
 WIDTH screen_width\letter_width, screen_height\letter_height
+WINDOWTITLE "Daleks on the Dance Floor"
 
 load_graphics
 run_game
+
+IMAGEDESTROY(title_image)
+END 0
 ' Main module end --------
 
 ' Function implementations
@@ -358,9 +366,12 @@ SUB load_graphics
     , LEN(stand_string) * letter_width, letter_height, stand_string)
     
     title_image = IMAGECREATE (title_width, title_height)
-    BLOAD "title.bmp", 0
-    GET (0,0)-(title_width-1,title_height-1), title_image
-    CLS
+    title_loaded = BLOAD ("title.bmp", 0)
+    IF title_loaded = 0 THEN
+        title_loaded = TRUE
+        GET (0,0)-(title_width-1,title_height-1), title_image
+        CLS
+    END IF
     
     
 END SUB
@@ -368,24 +379,17 @@ END SUB
 SUB run_game
     DIM AS MAP_RESULT map_run_result = no_win
     DO 
-   
-    ' run game loop until
-    ' all robots inactive
-    ' OR player inactive
+        map_run_result = game_loop
     
-    map_run_result = game_loop
+        IF map_run_result = player_win THEN
+            current_map += 1
+        ELSEIF map_run_result = robots_win OR map_run_result = MAP_RESULT.new_game THEN
+            current_map = 1
+            active_player.score = 0
+        END IF
     
-    IF map_run_result = player_win THEN
-        current_map += 1
-    ELSEIF map_run_result = robots_win THEN
-        current_map = 1
-        ' High score
-        active_player.score = 0
-    END IF
-    
-     ' init map
-    init_map(current_map)
-    
+        ' init map
+        init_map(current_map)
     LOOP UNTIL map_run_result = game_quit
 END SUB
 
@@ -408,6 +412,7 @@ FUNCTION game_loop AS MAP_RESULT
             mouse_y = mouse_in_y
         END IF
         
+        ' Lock screen for drawing
         SCREENLOCK
         SCREENSET work_page, show_page
         CLS
@@ -426,32 +431,40 @@ FUNCTION game_loop AS MAP_RESULT
                 loop_result = player_win
             END IF
         END IF
+        
+        IF loop_state = game_over THEN
+            draw_game_over()
+        END IF
        
         ' draw mouse
         draw_mouse (mouse_in_x, mouse_in_y, color_white, color_black)
         
+        ' End drawing
+        work_page = work_page xor 1
+        show_page = show_page xor 1
+        SCREENUNLOCK
+        
+        ' Update
         update_ripple_effect()
         
         SELECT CASE loop_state
         CASE wait_input
-            DIM AS PLAYER_ACTION action = active_player.action
-            DIM AS PLAYER_ACTION action_from_menu = get_menu_action ()
-            
             ' wait until user selects an arrow or ability
             ' If last_stand is active, do not change it
             IF active_player.action <> last_stand THEN
-                IF action_from_menu = no_action THEN
-                    action = get_player_action()
-                ELSE
-                    action = action_from_menu
+                ' Check move
+                DIM AS PLAYER_ACTION action = get_player_action()
+                IF action = no_action THEN
+                    ' Check menu
+                    action = get_ability_menu_action ()
                 END IF
-            END IF
             
-            IF action <> no_action THEN
-                active_player.action = action
-                robots_loop_begin = operational_robots
+                IF action <> no_action THEN
+                    active_player.action = action
+                    robots_loop_begin = operational_robots
                 
-                loop_state = animate_player
+                    loop_state = animate_player
+                END IF
             END IF
             
             
@@ -477,13 +490,33 @@ FUNCTION game_loop AS MAP_RESULT
             check_collisions ()
             give_player_score (robots_loop_begin)
             loop_result = get_map_result ()
-           
-            loop_state = wait_input
+            IF loop_result = robots_win THEN
+                loop_state = game_over
+                loop_result = no_win ' post-pone so we can draw game over
+            ELSE
+                loop_state = wait_input
+            END IF
+        CASE exit_loop
+            ' 
+        CASE game_over
+            IF mouse_click THEN
+                loop_result = robots_win
+                loop_state = exit_loop
+            END IF
         END SELECT
         
-        work_page = work_page xor 1
-        show_page = show_page xor 1
-        SCREENUNLOCK
+        
+        
+       
+        
+        DIM AS PLAYER_ACTION game_action = get_game_menu_action()
+        IF game_action = action_new_game THEN
+            loop_state = exit_loop
+            loop_result = MAP_RESULT.new_game
+        ELSEIF game_action = action_quit_game THEN
+            loop_state = exit_loop
+            loop_result = MAP_RESULT.game_quit
+        END IF
         
         mouse_click = FALSE
         
@@ -494,7 +527,7 @@ FUNCTION game_loop AS MAP_RESULT
             RETURN loop_result
         END IF
         
-    LOOP UNTIL MULTIKEY(SC_Q) OR MULTIKEY(SC_ESCAPE)OR key_pressed = Chr(255, 107)
+    LOOP UNTIL MULTIKEY(SC_ESCAPE)OR key_pressed = Chr(255, 107)
     ' Clear Inkey buffer
     ' Inkey buffer gets all the button presses 
     WHILE INKEY<> "": WEND
@@ -590,7 +623,7 @@ FUNCTION is_tile_valid_for_move (test_tile AS TILE) AS INTEGER
     RETURN FALSE
 END FUNCTION
 
-FUNCTION get_menu_action () AS PLAYER_ACTION
+FUNCTION get_game_menu_action () AS PLAYER_ACTION
     DIM AS PLAYER_ACTION button_action = no_action
     
     IF mouse_click THEN
@@ -606,7 +639,15 @@ FUNCTION get_menu_action () AS PLAYER_ACTION
         ELSE 
             game_menu.pressed = FALSE
         END IF
-        
+    END IF
+    
+    RETURN button_action
+END FUNCTION
+
+FUNCTION get_ability_menu_action AS PLAYER_ACTION 
+    DIM AS PLAYER_ACTION button_action = no_action
+    
+    IF mouse_click THEN
         IF ability_menu.pressed THEN
             IF is_mouse_on_button (teleport) THEN
                 button_action = teleport_action
@@ -745,7 +786,9 @@ FUNCTION is_pixel_inside_tile (pixel_pos AS VECTOR2, tile_coords AS TILE) AS INT
 END FUNCTION
 
 SUB draw_title
-    PUT (screen_width/2 -title_width/2, letter_height + button_padding * 2 + menu_margin_top), title_image, TRANS
+    IF title_loaded THEN
+        PUT (screen_width/2 -title_width/2, letter_height + button_padding * 2 + menu_margin_top), title_image, TRANS
+    END IF
 END SUB
 
 SUB draw_instructions
@@ -765,6 +808,18 @@ SUB draw_instructions
     
     DRAW STRING (text_x, text_y + letter_height *12), "- GAME BY MUFFINTRAP, CREATED USING FREEBASIC -", color_light_grey
     
+END SUB
+
+SUB draw_game_over ()
+    DIM AS INTEGER text_x = screen_width/2 - title_width/2, text_y = letter_height + button_padding * 2 + menu_margin_top + title_height
+    LINE (text_x - letter_width, text_y)-STEP(title_width, letter_height*6), color_black, BF
+    
+    text_x += letter_width * 12
+    DRAW STRING (text_x, text_y + letter_height *1), "GAME OVER - DISCO IS DEAD", color_white
+    DRAW STRING (text_x, text_y + letter_height *3), "YOUR SCORE WAS", colors_array(last_color+1 MOD tile_colors)
+    DRAW STRING STEP( (LEN("YOUR SCORE WAS") + 1)*letter_width, 0), "" &active_player.score, color_white
+    
+    DRAW STRING (text_x, text_y + letter_height *5), "CLICK MOUSE TO TRY AGAIN", colors_array(last_color+1 MOD tile_colors)
 END SUB
     
 SUB draw_menu
@@ -946,7 +1001,7 @@ SUB draw_robots_and_player (state AS GAME_LOOP_STATE)
                 tile_width / 5, color_white, , , ,F
         CASE teleport_action
             CIRCLE (start_pos.x + tile_width /2, start_pos.y + tile_height/2) _
-            , animation_progress * screen_width, color_blue
+            , animation_progress * screen_width, color_white
             draw_player_figure = FALSE
         CASE sonic_bomb
             CIRCLE (start_pos.x + tile_width /2, start_pos.y + tile_height/2) _
