@@ -190,10 +190,10 @@ CONST tile_height = 26
 CONST game_area_width = map_width * tile_width
 CONST game_area_height = map_height * tile_height
 
-CONST screen_width = 960
-CONST screen_height = 540
+DIM SHARED AS INTEGER screen_width = 960
+DIM SHARED AS INTEGER screen_height = 540
 
-CONST margin_x = (screen_width - game_area_width) / 2 , margin_y = (screen_height - game_area_height) /2
+DIM SHARED AS INTEGER margin_x, margin_y 
 
 
 CONST robots_per_map = 5
@@ -262,7 +262,26 @@ DIM SHARED AS INTEGER color_black = RGB(0,0,0), color_white = RGB(255,255,255) _
 init_game
 test_functions
 
-SCREENRES screen_width, screen_height, 16, 2, (GFX_WINDOWED OR GFX_NO_SWITCH)
+Dim As Integer mode, w, h
+' Find lowest 32 bit resolution that is supported and full screen to that
+mode = ScreenList(32)
+While (mode)
+    w = HiWord(mode)
+    h = LoWord(mode)
+    Print Str(w) + "x" + Str(h)
+    mode = ScreenList
+    
+    IF w >= screen_width AND h >= screen_height THEN
+        screen_width = w
+        screen_height = h
+        EXIT WHILE
+    END IF
+Wend
+
+margin_x = (screen_width - game_area_width) / 2
+margin_y = (screen_height - game_area_height) /2
+
+SCREENRES screen_width, screen_height, 32, 2, (GFX_FULLSCREEN OR GFX_NO_SWITCH)
 SETMOUSE 0,0,0
 SCREENSET work_page, show_page
 
@@ -525,6 +544,7 @@ FUNCTION game_loop AS MAP_RESULT
             RETURN loop_result
         END IF
         
+    key_pressed = INKEY
     LOOP UNTIL MULTIKEY(SC_ESCAPE)OR key_pressed = Chr(255, 107)
     ' Clear Inkey buffer
     ' Inkey buffer gets all the button presses 
