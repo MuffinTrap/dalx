@@ -458,16 +458,14 @@ FUNCTION game_loop AS MAP_RESULT
                     ' Check menu
                     action = get_ability_menu_action ()
                 END IF
-            
-                IF action <> no_action THEN
-                    active_player.action = action
-                    robots_loop_begin = operational_robots
-                
-                    loop_state = animate_player
-                END IF
+                active_player.action = action
             END IF
             
-            
+            IF active_player.action <> no_action THEN
+                robots_loop_begin = operational_robots
+                
+                loop_state = animate_player
+            END IF
         CASE animate_player
             active_player.action = run_player_action(active_player.action)
             IF active_player.action = no_action _
